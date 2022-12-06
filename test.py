@@ -34,8 +34,8 @@ def predict(test_loader, model):
     return y_predicted
 
 if __name__ == '__main__':
-    path_test = 'dataset/structured_logs/test_data'
-    path_train = 'dataset/structured_logs/train_data'
+    path_test = 'logs/structured_logs/test_data'
+    path_train = 'logs/structured_logs/train_data'
     vocab2idx, _ = dataloader.to_idx(path_train)
     vocab_sz = len(vocab2idx)
 

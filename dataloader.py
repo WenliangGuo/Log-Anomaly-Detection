@@ -55,103 +55,86 @@ def _split_data(x_data, y_data=None, train_ratio=0, split_type='uniform'):
         y_train = y_train[indexes]
     return (x_train, y_train), (x_test, y_test)
 
-def load_HDFS(log_file, label_file=None, window='session', train_ratio=0.5, split_type='sequential',
+def load_HDFS(log_file, label_file, template_file, window='session', train_ratio=0.7, split_type='sequential',
     save_csv=False):
     """ Load HDFS structured log into train and test data
 
     Arguments
     ---------
         log_file: str, the file path of structured log.
-        label_file: str, the file path of anomaly labels, None for unlabeled data
+        label_file: str, the file path of anomaly labels, None for unlabeled data.
+        template_file: str, the file path of structured templates of logs.
         window: str, the window options including `session` (default).
         train_ratio: float, the ratio of training data for train/test split.
-        split_type: `uniform` or `sequential`, which determines how to split dataset. `uniform` means
+        split_type: `uniform` or `sequential`, which determines how to split logs. `uniform` means
             to split positive samples and negative samples equally when setting label_file. `sequential`
             means to split the data sequentially without label_file. That is, the first part is for training,
             while the second part is for testing.
         save_csv : True or False
 
     Returns
-    -------
-        (x_train, y_train): the training data
-        (x_test, y_test): the testing data
+        x_train, y_train: the training data
+        x_test, y_test: the testing data
     """
 
-    #print('====== Input data summary ======')
+    ## load logs
+    struct_log = pd.read_csv(log_file, engine='c', na_filter=False, memory_map=True)
+    data_dict = OrderedDict()  # ordered dictionary
+    for idx, row in struct_log.iterrows():
+        blkId_list = re.findall(r'(blk_-?\d+)', row['Content'])
+        blkId_set = set(blkId_list)
+        for blk_Id in blkId_set:
+            if not blk_Id in data_dict:
+                data_dict[blk_Id] = []
+            data_dict[blk_Id].append(row['EventId'])
+    data_df = pd.DataFrame(list(data_dict.items()), columns=['BlockId', 'EventSequence'])
 
-    if log_file.endswith('.npz'):
-        # Split training and validation set in a class-uniform way
-        data = np.load(log_file)
-        x_data = data['x_data']
-        y_data = data['y_data']
-        (x_train, y_train), (x_test, y_test) = _split_data(x_data, y_data, train_ratio, split_type)
+    ## load labels
+    label_data = pd.read_csv(label_file, engine='c', na_filter=False, memory_map=True)
+    label_data = label_data.set_index('BlockId')
+    label_dict = label_data['Label'].to_dict()
+    data_df['Label'] = data_df['BlockId'].apply(lambda x: 1 if label_dict[x] == 'Anomaly' else 0)
 
-    elif log_file.endswith('.csv'):
-        assert window == 'session', "Only window=session is supported for HDFS dataset."
-        struct_log = pd.read_csv(log_file, engine='c', na_filter=False, memory_map=True)
-        data_dict = OrderedDict()  # ordered dictionary
-        for idx, row in struct_log.iterrows():
-            blkId_list = re.findall(r'(blk_-?\d+)', row['LogContent'])
-            blkId_set = set(blkId_list)
-            for blk_Id in blkId_set:
-                if not blk_Id in data_dict:
-                    data_dict[blk_Id] = []
-                data_dict[blk_Id].append(row['TemplateId'])
-        data_df = pd.DataFrame(list(data_dict.items()), columns=['BlockId', 'EventSequence'])
+    # Split train and test data
+    (x_train, y_train), (x_test, y_test) = _split_data(data_df['EventSequence'].values,
+        data_df['Label'].values, train_ratio, split_type)
 
-        if label_file:
-            # Split training and validation set in a class-uniform way
-            label_data = pd.read_csv(label_file, engine='c', na_filter=False, memory_map=True)
-            label_data = label_data.set_index('BlockId')
-            label_dict = label_data['Label'].to_dict()
-            data_df['Label'] = data_df['BlockId'].apply(lambda x: 1 if label_dict[x] == 'Anomaly' else 0)
+    x_train = to_idx(x_train, template_file)
+    x_test = to_idx(x_test, template_file)
 
-            # Split train and test data
-            (x_train, y_train), (x_test, y_test) = _split_data(data_df['EventSequence'].values, 
-                data_df['Label'].values, train_ratio, split_type)
+    if save_csv:
+        data_df.to_csv('data_instances.csv', index=False)
 
-        if save_csv:
-            data_df.to_csv('data_instances.csv', index=False)
+    return x_train, y_train, x_test, y_test
 
-        if label_file is None:
-            if split_type == 'uniform':
-                split_type = 'sequential'
-                print('Warning: Only split_type=sequential is supported \
-                if label_file=None.'.format(split_type))
-            # Split training and validation set sequentially
-            x_data = data_df['EventSequence'].values
-            (x_train, _), (x_test, _) = _split_data(x_data, train_ratio=train_ratio, split_type=split_type)
-            #print('Total: {} instances, train: {} instances, test: {} instances'.format(
-            #      x_data.shape[0], x_train.shape[0], x_test.shape[0]))
-            return (x_train, None), (x_test, None)
-    else:
-        raise NotImplementedError('load_HDFS() only support csv and npz files!')
+def to_idx(x, template_file):
+    ## convert template to index by EventID
+    vocab2idx = dict()
+    template_file = pd.read_csv(template_file, engine='c', na_filter=False, memory_map=True)
+    for idx, template_id in enumerate(template_file['EventId'], start=len(vocab2idx)):
+        vocab2idx[template_id] = idx + 1
 
-    num_train = x_train.shape[0]
-    num_test = x_test.shape[0]
-    num_total = num_train + num_test
-    num_train_pos = sum(y_train)
-    num_test_pos = sum(y_test)
-    num_pos = num_train_pos + num_test_pos
+    max_len = 0
+    x_idx = []
+    for i in range(x.shape[0]):
+        if len(x[i]) > max_len:
+            max_len = len(x[i])
 
-    # print('Total: {} instances, {} anomaly, {} normal' \
-    #       .format(num_total, num_pos, num_total - num_pos))
-    # print('Train: {} instances, {} anomaly, {} normal' \
-    #       .format(num_train, num_train_pos, num_train - num_train_pos))
-    # print('Test: {} instances, {} anomaly, {} normal\n' \
-    #       .format(num_test, num_test_pos, num_test - num_test_pos))
+    for i in range(x.shape[0]):
+        temp = []
+        for j in range(len(x[i])):
+            temp.append(vocab2idx[x[i][j]])
+        for j in range(max_len-len(x[i])):
+            temp.append(0)
+        x_idx.append(temp)
 
-    return (x_train, y_train), (x_test, y_test)
-
+    return np.array(x_idx,dtype=float)
 
 def load_NAIE(log_file, label_file=None, save_csv=False):
     struct_log = pd.read_csv(log_file, engine='c', na_filter=False, memory_map=True)
     data_dict = OrderedDict()  # ordered dictionary
     for idx, row in struct_log.iterrows():
-        try:
-            dt_str = row['Date'] + 'T' + row['Time']
-        except:
-            dt_str = row['DateTime']
+        dt_str = str(row['Date']) + 'T' + str(row['Time'])
         ts = parse(dt_str).timestamp()
         slice_win = ts // 300
         # time_slice = (dt.datetime.fromtimestamp(slice_win * 300) + dt.timedelta(hours=time_zone)).strftime('%Y-%m-%d %H:%M:%S')
@@ -172,27 +155,28 @@ def load_NAIE(log_file, label_file=None, save_csv=False):
     else:
         raise NotImplementedError('load_NAIE() only support csv and npz files!')
 
-def to_idx(path):
-    log_structured_train = [name for name in os.listdir(path) if fnmatch(name, '*.log_structured.csv')]
-    log_structured_train.sort()
-    log_dict = OrderedDict()
-    # generate the data of 'filename': seqs.
-    for file in log_structured_train:
-        name = file.split('.')[0]
-        (x_train, _) = load_NAIE(os.path.join(path, file))
-        if name not in log_dict:
-            log_dict[name] = []
-        log_dict[name].append(list(x_train))
-    # calculate the vocabulary of all the templates
-    vocab2idx = {'PAD': 0}
-    log_templates_train = [name for name in os.listdir(path) if fnmatch(name, '*.log_templates.csv')]
-    log_templates_train.sort()
-    for file in log_templates_train:
-        template_file = pd.read_csv(os.path.join(path, file), engine='c', na_filter=False, memory_map=True)
-        for idx, template_id in enumerate(template_file['EventId'], start=len(vocab2idx)):
-            vocab2idx[template_id] = idx
-    vocab2idx['UNK'] = len(vocab2idx)
-    return vocab2idx, log_dict
+# def to_idx(path):
+#     log_structured_train = [name for name in os.listdir(path) if fnmatch(name, '*.log_structured.csv')]
+#     log_structured_train.sort()
+#     log_dict = OrderedDict()
+#     # generate the data of 'filename': seqs.
+#     for file in log_structured_train:
+#         name = file.split('.')[0]
+#         (x_train, _) = load_NAIE(os.path.join(path, file))
+#         if name not in log_dict:
+#             log_dict[name] = []
+#         log_dict[name].append(list(x_train))
+#     # calculate the vocabulary of all the templates
+#     vocab2idx = {'PAD': 0}
+#     log_templates_train = [name for name in os.listdir(path) if fnmatch(name, '*.log_templates.csv')]
+#     log_templates_train.sort()
+#     for file in log_templates_train:
+#         template_file = pd.read_csv(os.path.join(path, file), engine='c', na_filter=False, memory_map=True)
+#         for idx, template_id in enumerate(template_file['EventId'], start=len(vocab2idx)):
+#             vocab2idx[template_id] = idx
+#     vocab2idx['UNK'] = len(vocab2idx)
+#     return vocab2idx, log_dict
+
 
 def generate_data_for_training(vocab2idx, log_dict_train, window_size=10):
     num_sessions = 0
@@ -241,7 +225,7 @@ def generate_data_for_testing(path_test, vocab2idx, window_size=10):
             dataset.append(line)
         log_dict_test[name] = dataset
         num_sessions += len(dataset)
-        #print('file:sessions = {}:{}'.format(name, len(dataset)))
+        #print('file:sessions = {}:{}'.format(name, len(logs)))
     #print('Number of test_files:{}'.format(len(log_dict_test)))
     #print('Number of sessions:{}'.format(num_sessions))
     return log_dict_test, time_dict_test
@@ -256,7 +240,7 @@ def result_to_csv(y, t, result_dir, time_zone=8):
             dataset.append(name)
             datetime.append(time_slice)
             label.append(y[name][i])
-    data_dict = {'dataset': dataset, 'time_slice(UTC+8)': datetime, 'label':label}
+    data_dict = {'logs': dataset, 'time_slice(UTC+8)': datetime, 'label':label}
     data_df = pd.DataFrame(data_dict)
     # result_dir = '../result'
     if not os.path.exists(result_dir):                         # 若不存在保存路径，则创建
@@ -268,7 +252,7 @@ def result_to_csv(y, t, result_dir, time_zone=8):
                     '交换机端口频繁Up_Down', '存储系统管理链路故障']
     submit_df = pd.DataFrame()
     for name in dataset_list:
-        df = data_df[data_df['dataset']==name]
+        df = data_df[data_df['logs']==name]
         submit_df = submit_df.append(df, ignore_index=True)
     submit_df.to_csv(result_dir + 'submit.csv', index=False, encoding='utf-8')
     #logger.info('Result was saved to submit.csv')

@@ -80,10 +80,9 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class Transformer(nn.Module):
-    def __init__(self, in_dim, embed_dim, out_dim, window_size, depth, heads, dim_head, dim_ratio, dropout = 0.1):
+    def __init__(self, in_dim, embed_dim, depth, heads, dim_head, dim_ratio, dropout = 0.1):
         super().__init__()
         self.embed_dim = embed_dim
-        self.window_size = window_size
         self.translayers = nn.ModuleList([])
         self.embed = nn.Linear(in_features= in_dim, out_features= embed_dim)
         self.dropout = nn.Dropout(dropout)
@@ -95,25 +94,15 @@ class Transformer(nn.Module):
                 PreNorm(embed_dim, FeedForward(embed_dim, embed_dim * dim_ratio, dropout = dropout))
             ]))
 
-        self.fc1 = nn.Linear(in_features = embed_dim * window_size, out_features= embed_dim * window_size, bias= False)
-        self.act = nn.ReLU()
-        self.fc2 = nn.Linear(in_features = embed_dim * window_size, out_features= out_dim, bias= False)
-
     def forward(self, x):
-        B,L,C = x.shape #[B, window_size, input_size]
-        
-        x = self.embed(x) #[B, window_size, embed_size]
+        B = x.shape[0]
+        x = self.embed(x)
         x = self.dropout(x)
-
         x= self.pos_embed(x)
 
         for attn, ff in self.translayers:
             x = attn(x) + x
-            x = ff(x) + x #[B, window_size, embed_size]
+            x = ff(x) + x
 
-        x = x.view(B, self.window_size*self.embed_dim)
-        
-        x = self.act(self.fc1(x))
-        out = self.fc2(x)
-
+        out = x.view(B, -1)
         return out
