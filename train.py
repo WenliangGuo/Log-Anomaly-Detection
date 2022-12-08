@@ -3,8 +3,6 @@ import os, os.path
 import dataloader
 import numpy as np
 import matplotlib
-
-matplotlib.use('AGG')
 import matplotlib.pyplot as plt
 
 import torch
@@ -15,9 +13,9 @@ import torch.nn.functional as F
 
 from models import Transformer
 
-log_path = 'logs/HDFS/structured/HDFS.log_structured.csv'
-label_path = 'logs/HDFS/anomaly_label.csv'
-template_path = 'logs/HDFS/structured/HDFS.log_templates.csv'
+log_path = 'logs/structured/HDFS.log_structured.csv'
+label_path = 'logs/anomaly_label.csv'
+template_path = 'logs/structured/HDFS.log_templates.csv'
 
 x_train, y_train, x_test, y_test = dataloader.load_HDFS(
     log_file=log_path,
@@ -51,7 +49,7 @@ print('Validation: {} instances, {} anomaly, {} normal' \
 print('Test: {} instances, {} anomaly, {} normal\n' \
       .format(num_test, num_test_pos, num_test - num_test_pos))
 
-batch_size = 256
+batch_size = 128
 lr = 0.001
 num_epochs = 300
 max_length = x_train.shape[1]
@@ -130,13 +128,6 @@ for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
 
     ave_trainloss = train_loss / len(train_dataloader)
     train_loss_list.append(ave_trainloss)
-
-    if ave_valoss < loss_min:
-        loss_min = ave_valoss
-        torch.save(model.state_dict(), save_path)
-        best_model = model
-        print("Model saved")
-
     print('Epoch [{}/{}], train_loss: {:.14f}'.format(epoch, num_epochs, ave_trainloss))
 
     if epoch % val_interval == 0:
@@ -150,6 +141,13 @@ for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
 
         ave_valoss = val_loss / len(val_dataloader)
         val_loss_list.append(ave_valoss)
+        
+        if ave_valoss < loss_min:
+            loss_min = ave_valoss
+            torch.save(model.state_dict(), save_path)
+            best_model = model
+            print("Model saved")
+        
         print('Epoch [{}/{}] val loss: {:.14f}'.format(epoch, num_epochs, ave_valoss))
 
 print(f"Finished training, model saved in: {save_path} ")
