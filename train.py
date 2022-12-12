@@ -4,6 +4,7 @@ import dataloader
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from utils import metrics
 
 import torch
 import torch.nn as nn
@@ -49,11 +50,11 @@ print('Validation: {} instances, {} anomaly, {} normal' \
 print('Test: {} instances, {} anomaly, {} normal\n' \
       .format(num_test, num_test_pos, num_test - num_test_pos))
 
-batch_size = 128
-lr = 0.001
+batch_size = 256
+lr = 0.005
 num_epochs = 300
 max_length = x_train.shape[1]
-val_interval = 10
+val_interval = 1
 
 x_train_tensor = torch.Tensor(x_train)
 y_train_tensor = torch.Tensor(y_train).to(torch.int64)
@@ -62,8 +63,8 @@ y_train_tensor = F.one_hot(y_train_tensor, num_classes=2)
 train_dataset = TensorDataset(x_train_tensor, y_train_tensor.to(torch.float))
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
-x_val_tensor = torch.Tensor(x_val[:200])
-y_val_tensor = torch.Tensor(y_val[:200]).to(torch.int64)
+x_val_tensor = torch.Tensor(x_val)
+y_val_tensor = torch.Tensor(y_val).to(torch.int64)
 y_val_tensor = F.one_hot(y_val_tensor, num_classes=2)
 
 val_dataset = TensorDataset(x_val_tensor, y_val_tensor.to(torch.float))
@@ -73,15 +74,17 @@ model = nn.Sequential(
     Transformer(
         in_dim=1,
         embed_dim=64,
-        depth=6,
+        depth=8,
         heads=8,
         dim_head=64,
-        dim_ratio=2,
+        dim_ratio=4,
         dropout=0.1
     ),
-    nn.Linear(max_length * 64, 100),
+    nn.Linear(max_length * 64, 500),
     nn.ReLU(),
-    nn.Linear(100, 2),
+    nn.Linear(500, 300),
+    nn.ReLU(),
+    nn.Linear(300, 2),
     nn.Softmax()
 )
 
@@ -111,7 +114,6 @@ val_loss_list = []
 
 from tqdm import tqdm
 
-print("Begin training ......")
 for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
     train_loss = 0
     val_loss = 0
@@ -129,15 +131,21 @@ for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
     ave_trainloss = train_loss / len(train_dataloader)
     train_loss_list.append(ave_trainloss)
     print('Epoch [{}/{}], train_loss: {:.14f}'.format(epoch, num_epochs, ave_trainloss))
-
+    
+    # Vaildating
     if epoch % val_interval == 0:
-        # Vaildating
+        y_pred = []
+        y_true = []
         with torch.no_grad():
-            for step, (seq, label) in enumerate(val_dataloader):
+            for step, (seq, label) in enumerate(tqdm(val_dataloader)):
                 seq = seq.clone().detach().view(-1, max_length, 1).to(device)
                 output = model(seq)
                 loss = criterion(output, label.to(device))
                 val_loss += loss.item()
+                y_pred.append(np.argmax(output.cpu().detach().numpy()))
+                y_true.append(np.argmax(label))
+
+        precision, recall, F1_score = metrics(np.array(y_pred), np.array(y_true))
 
         ave_valoss = val_loss / len(val_dataloader)
         val_loss_list.append(ave_valoss)
@@ -148,20 +156,15 @@ for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
             best_model = model
             print("Model saved")
         
-        print('Epoch [{}/{}] val loss: {:.14f}'.format(epoch, num_epochs, ave_valoss))
+        print('Epoch [{}/{}] val loss: {:.14f} precision: {:.5f} recall: {:.5f} F_score: {:.5f}'.
+              format(epoch, num_epochs, ave_valoss, precision, recall, F1_score))
 
 print(f"Finished training, model saved in: {save_path} ")
 
-xx = range(len(train_loss_list))
+xx = range(epochs)
 plt.plot(xx, train_loss_list, label="Train")
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.savefig("train_loss.png")
-
-xx = range(len(val_loss_list))
 plt.plot(xx, val_loss_list, label="Val")
 plt.xlabel('Epochs')
 plt.ylabel('Loss')
 plt.legend()
-plt.savefig("val_loss.png")
+plt.savefig("loss.png")
