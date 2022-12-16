@@ -38,8 +38,8 @@ class Large_TransLog(nn.Module):
         return x
 
 class Mini_TransLog(nn.Module):
-    def __init__(self, max_length, in_dim=1, embed_dim=32, depth=4, heads=8,
-                dim_head=64, dim_ratio=2, dropout=0.1):
+    def __init__(self, max_length, in_dim=1, embed_dim=64, depth=4, heads=8,
+                dim_head=64, dim_ratio=2, dropout=0.5):
         super(Mini_TransLog, self).__init__()
         self.transformer = Transformer(in_dim=in_dim, embed_dim=embed_dim,depth=depth,
                                        heads=heads,dim_head=dim_head,dim_ratio=dim_ratio,
