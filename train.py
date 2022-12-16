@@ -1,22 +1,22 @@
-import os, os.path
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+import os
 import dataloader
 import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-from utils import metrics
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader, random_split
 import torch.nn.functional as F
+from loss_func import FocalLoss
+from models.model_collects import *
 
 from models import Transformer
+from sklearn.metrics import precision_recall_curve
+import matplotlib.pyplot as plt
 
-log_path = 'logs/structured/HDFS.log_structured.csv'
+log_path = 'logs/structured_2k/HDFS_2k.log_structured.csv'
 label_path = 'logs/anomaly_label.csv'
-template_path = 'logs/structured/HDFS.log_templates.csv'
+template_path = 'logs/structured_2k/HDFS_2k.log_templates.csv'
 
 x_train, y_train, x_test, y_test = dataloader.load_HDFS(
     log_file=log_path,
@@ -50,8 +50,8 @@ print('Validation: {} instances, {} anomaly, {} normal' \
 print('Test: {} instances, {} anomaly, {} normal\n' \
       .format(num_test, num_test_pos, num_test - num_test_pos))
 
-batch_size = 256
-lr = 0.005
+batch_size = 512
+lr = 0.001
 num_epochs = 300
 max_length = x_train.shape[1]
 val_interval = 1
@@ -68,103 +68,113 @@ y_val_tensor = torch.Tensor(y_val).to(torch.int64)
 y_val_tensor = F.one_hot(y_val_tensor, num_classes=2)
 
 val_dataset = TensorDataset(x_val_tensor, y_val_tensor.to(torch.float))
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 model = nn.Sequential(
     Transformer(
         in_dim=1,
         embed_dim=64,
-        depth=8,
+        depth=6,
         heads=8,
         dim_head=64,
-        dim_ratio=4,
+        dim_ratio=2,
         dropout=0.1
     ),
-    nn.Linear(max_length * 64, 500),
-    nn.ReLU(),
-    nn.Linear(500, 300),
-    nn.ReLU(),
-    nn.Linear(300, 2),
-    nn.Softmax()
+    nn.Linear(max_length * 64, 2)
 )
 
-model = nn.DataParallel(model)  # multi-GPU
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = torch.device("mps")
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps")
 print('device: ', device)
+model = model.to(device)
 
 # Loss and optimizer
-model = model.to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+criterion_dict = {"Focal Loss": FocalLoss(),
+                  "Cross Entropy": nn.BCEWithLogitsLoss(),
+                  "Root Mean Square": RMSELoss()}
 
 # Train the model
-loss_min = 99999
-model_name = 'best_model.pth'
 model_path = "saved_models"
-
 if not os.path.exists(model_path):
     os.mkdir(model_path)
 
-save_path = os.path.join(model_path, model_name)
-best_model = model
-train_loss_list = []
-val_loss_list = []
+init_model = model
+train_loss_collection = dict()
+val_loss_collection= dict()
 
-from tqdm import tqdm
+for name,criterion in criterion_dict.items():
+    optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+    best_model = init_model
+    model = init_model
+    save_path = os.path.join(model_path, 'best_model_{}.pth'.format(name))
+    loss_min = 1e10
+    train_loss_list = []
+    val_loss_list = []
 
-for epoch in range(1, num_epochs + 1):  # Loop over the dataset multiple times
-    train_loss = 0
-    val_loss = 0
+    for epoch in range(1, num_epochs + 1):
+        train_loss = 0
+        val_loss = 0
+        # Training
+        for step, (seq, label) in enumerate(train_dataloader):
+            seq = seq.clone().detach().view(-1, max_length, 1).to(device)
+            output = model(seq)
+            loss = criterion(output, label.to(device))
+            optimizer.zero_grad()
+            loss.backward()
 
-    # Training
-    for step, (seq, label) in enumerate(tqdm(train_dataloader)):
-        seq = seq.clone().detach().view(-1, max_length, 1).to(device)
-        output = model(seq)
-        loss = criterion(output, label.to(device))
-        optimizer.zero_grad()
-        loss.backward()
-        train_loss += loss.item()
-        optimizer.step()
+            train_loss += loss.item()
+            optimizer.step()
 
-    ave_trainloss = train_loss / len(train_dataloader)
-    train_loss_list.append(ave_trainloss)
-    print('Epoch [{}/{}], train_loss: {:.14f}'.format(epoch, num_epochs, ave_trainloss))
-    
-    # Vaildating
-    if epoch % val_interval == 0:
-        y_pred = []
-        y_true = []
+        ave_trainloss = train_loss / len(train_dataloader)
+        train_loss_list.append(ave_trainloss)
+
+        # Vaildating
+        saved = False
         with torch.no_grad():
-            for step, (seq, label) in enumerate(tqdm(val_dataloader)):
+            for step, (seq, label) in enumerate(val_dataloader):
                 seq = seq.clone().detach().view(-1, max_length, 1).to(device)
                 output = model(seq)
-                loss = criterion(output, label.to(device))
+                #loss = criterion(output, label.to(device))
+                loss = nn.BCEWithLogitsLoss()(output, label.to(device))
                 val_loss += loss.item()
-                y_pred.append(np.argmax(output.cpu().detach().numpy()))
-                y_true.append(np.argmax(label))
-
-        precision, recall, F1_score = metrics(np.array(y_pred), np.array(y_true))
 
         ave_valoss = val_loss / len(val_dataloader)
         val_loss_list.append(ave_valoss)
-        
+
         if ave_valoss < loss_min:
             loss_min = ave_valoss
             torch.save(model.state_dict(), save_path)
             best_model = model
-            print("Model saved")
-        
-        print('Epoch [{}/{}] val loss: {:.14f} precision: {:.5f} recall: {:.5f} F_score: {:.5f}'.
-              format(epoch, num_epochs, ave_valoss, precision, recall, F1_score))
+            saved = True
 
-print(f"Finished training, model saved in: {save_path} ")
+        print('loss= {} epoch [{}/{}], train_loss= {:.10f} val_loss= {:.10f} save= {}'.
+              format(name, epoch, num_epochs, ave_trainloss, ave_valoss, saved))
 
-xx = range(epochs)
-plt.plot(xx, train_loss_list, label="Train")
-plt.plot(xx, val_loss_list, label="Val")
+        train_loss_collection[name] = train_loss_list
+        val_loss_collection[name] = val_loss_list
+
+xx = range(1, num_epochs+1)
+for name, train_loss_list in train_loss_collection.items():
+    plt.plot(xx, train_loss_list, label=name)
 plt.xlabel('Epochs')
-plt.ylabel('Loss')
+plt.ylabel('Training Loss')
 plt.legend()
-plt.savefig("loss.png")
+plt.savefig("train_loss.png")
+
+plt.clf()
+
+for name, val_loss_list in val_loss_collection.items():
+    plt.plot(xx, val_loss_list, label=name)
+plt.xlabel('Epochs')
+plt.ylabel('Validation Loss')
+plt.legend()
+plt.savefig("valid_loss.png")
+
+# 计算 precision 和 recall
+precision, recall, _ = precision_recall_curve(labels, pred_probs)
+
+# 绘制 precision-recall 曲线
+plt.plot(recall, precision)
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.show()
