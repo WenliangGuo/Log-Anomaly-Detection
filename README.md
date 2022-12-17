@@ -2,17 +2,14 @@
 Based on the implementation of Deeplog, we introduced Transformer to improve the performance and proposed TransLog.
 
 ## Overall Architecture
-![TransLog网络架构](figures/整体架构.png)
+![TransLog网络架构](figures/architecture.png)
 
 ## Experimental Results
-![Loss](figures/loss.png)
+### Training Loss 
+![Loss](figures/train_loss.png)
 
-## Usage
-### Step 1: Create the Environment
-pip install -r requirements.txt
+### Validation Loss
+![Loss](figures/valid_loss.png)
 
-### Step 2: Train
-python train.py
-
-### Step 3: Test
-python test.py
+### Number of Parameters
+![Loss](figures/num.png)
