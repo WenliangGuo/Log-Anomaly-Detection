@@ -1,5 +1,4 @@
 .ipynb_checkpoints/
-logs/
 saved_models/
 venv/
 data_instances.csv

@@ -14,9 +14,9 @@ from models import Transformer
 import matplotlib.pyplot as plt
 import torchinfo
 
-log_path = 'logs/structured_2k/HDFS_2k.log_structured.csv'
+log_path = 'logs/HDFS_2k.log_structured.csv'
 label_path = 'logs/anomaly_label.csv'
-template_path = 'logs/structured_2k/HDFS_2k.log_templates.csv'
+template_path = 'logs/HDFS_2k.log_templates.csv'
 
 x_train, y_train, x_test, y_test = dataloader.load_HDFS(
     log_file=log_path,
